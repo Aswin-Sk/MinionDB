@@ -1,0 +1,53 @@
+package main
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+)
+
+func handleGet(c *gin.Context) {
+	key := c.Param("key")
+	val, err := db.Get(key)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "key not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"key": key, "value": val})
+}
+
+type setRequest struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+func handleSet(c *gin.Context) {
+	var req setRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	if err := db.Set(req.Key, req.Value); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func handleDelete(c *gin.Context) {
+	key := c.Param("key")
+	if err := db.Delete(key); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "key not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
+func handleCompact(c *gin.Context) {
+	if err := db.Compact(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "compaction failed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "compacted"})
+}
