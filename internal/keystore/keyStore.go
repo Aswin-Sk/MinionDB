@@ -1,87 +1,119 @@
 package keystore
 
 import (
+	"MinionDB/internal/wal"
 	"bufio"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 const tombstone = "__deleted__"
 
-type record struct {
-	key   string
-	value string
-}
-
 type MiniKV struct {
-	mu    sync.RWMutex
-	file  *os.File
-	index map[string]string
-	path  string
+	mu       sync.RWMutex
+	dataFile *os.File
+	walFile  *wal.WAL
+	index    map[string]string
+	path     string
 }
 
-// Open opens the DB or creates a new one
+// Open opens or creates a MiniKV instance with WAL support
 func Open(path string) (*MiniKV, error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+	dataPath := path + ".data"
+	walPath := path + ".wal"
+
+	dataFile, err := os.OpenFile(dataPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
+		return nil, err
+	}
+	walFile, err := wal.Open(walPath, 2*time.Second)
+	if err != nil {
+		dataFile.Close()
 		return nil, err
 	}
 
 	db := &MiniKV{
-		file:  file,
-		index: make(map[string]string),
-		path:  path,
+		dataFile: dataFile,
+		walFile:  walFile,
+		index:    make(map[string]string),
+		path:     path,
 	}
 
-	if err := db.loadIndex(); err != nil {
-		file.Close()
+	if err := db.loadDataFile(); err != nil {
+		db.Close()
 		return nil, err
 	}
+
+	if err := db.replayWAL(); err != nil {
+		db.Close()
+		return nil, err
+	}
+
 	return db, nil
 }
 
-// loadIndex rebuilds the in-memory index from the file
-func (db *MiniKV) loadIndex() error {
-	db.index = make(map[string]string)
-	if _, err := db.file.Seek(0, 0); err != nil {
+// loadDataFile rebuilds the index from the data snapshot
+func (db *MiniKV) loadDataFile() error {
+	if _, err := db.dataFile.Seek(0, 0); err != nil {
 		return err
 	}
-
-	scanner := bufio.NewScanner(db.file)
+	scanner := bufio.NewScanner(db.dataFile)
 	for scanner.Scan() {
 		line := scanner.Text()
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) != 2 {
 			continue
 		}
-		key := parts[0]
-		val := parts[1]
-
-		if val == tombstone {
-			delete(db.index, key)
-		} else {
+		key, val := parts[0], parts[1]
+		if val != tombstone {
 			db.index[key] = val
 		}
 	}
 	return scanner.Err()
 }
 
-// Set stores a key-value pair
+// replayWAL applies pending operations from WAL to the index
+func (db *MiniKV) replayWAL() error {
+	if _, err := db.walFile.File.Seek(0, 0); err != nil {
+		return err
+	}
+
+	scanner := bufio.NewScanner(db.walFile.File)
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key, val := parts[0], parts[1]
+		if val == tombstone {
+			delete(db.index, key)
+		} else {
+			db.index[key] = val
+		}
+	}
+
+	return scanner.Err()
+}
+
+// Set inserts or updates a key-value pair
 func (db *MiniKV) Set(key, value string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	line := fmt.Sprintf("%s:%s\n", key, value)
-	if _, err := db.file.WriteString(line); err != nil {
+	err := db.walFile.Append([]byte(line))
+	if err != nil {
 		return err
 	}
 	db.index[key] = value
-	return db.file.Sync()
+	return nil
 }
 
-// Get retrieves a value
+// Get retrieves a value by key
 func (db *MiniKV) Get(key string) (string, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -93,7 +125,7 @@ func (db *MiniKV) Get(key string) (string, error) {
 	return val, nil
 }
 
-// Delete marks a key as deleted
+// Delete removes a key (using tombstone marker)
 func (db *MiniKV) Delete(key string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -101,27 +133,25 @@ func (db *MiniKV) Delete(key string) error {
 	if _, ok := db.index[key]; !ok {
 		return fmt.Errorf("key not found")
 	}
-
 	line := fmt.Sprintf("%s:%s\n", key, tombstone)
-	if _, err := db.file.WriteString(line); err != nil {
+	err := db.walFile.Append([]byte(line))
+	if err != nil {
 		return err
 	}
 	delete(db.index, key)
-	return db.file.Sync()
+	return nil
 }
 
-// Compact writes only live keys to a new file and atomically swaps
+// Compact merges index into data file and clears WAL
 func (db *MiniKV) Compact() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	tempPath := db.path + ".tmp"
+	tempPath := db.path + ".data.tmp"
 	tempFile, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
-
-	// Write all live keys
 	for key, val := range db.index {
 		line := fmt.Sprintf("%s:%s\n", key, val)
 		if _, err := tempFile.WriteString(line); err != nil {
@@ -132,22 +162,35 @@ func (db *MiniKV) Compact() error {
 	tempFile.Sync()
 	tempFile.Close()
 
-	db.file.Close()
-	if err := os.Rename(tempPath, db.path); err != nil {
+	db.dataFile.Close()
+	err = os.Rename(tempPath, db.path+".data")
+	if err != nil {
 		return err
 	}
-
-	db.file, err = os.OpenFile(db.path, os.O_RDWR|os.O_APPEND, 0644)
+	db.dataFile, err = os.OpenFile(db.path+".data", os.O_RDWR, 0644)
 	if err != nil {
 		return err
 	}
 
-	return nil
+	db.walFile.Close()
+	db.walFile, err = wal.Open(db.path+".wal", 2*time.Second)
+	if err != nil {
+		return err
+	}
+	return err
 }
 
-// Close closes the DB
+// Close closes all files
 func (db *MiniKV) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.file.Close()
+	err := db.dataFile.Close()
+	if err != nil {
+		return err
+	}
+	err = db.walFile.Close()
+	if err != nil {
+		return err
+	}
+	return nil
 }
