@@ -142,44 +142,6 @@ func (db *MiniKV) Delete(key string) error {
 	return nil
 }
 
-// Compact merges index into data file and clears WAL
-func (db *MiniKV) Compact() error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	tempPath := db.path + ".data.tmp"
-	tempFile, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	for key, val := range db.index {
-		line := fmt.Sprintf("%s:%s\n", key, val)
-		if _, err := tempFile.WriteString(line); err != nil {
-			tempFile.Close()
-			return err
-		}
-	}
-	tempFile.Sync()
-	tempFile.Close()
-
-	db.dataFile.Close()
-	err = os.Rename(tempPath, db.path+".data")
-	if err != nil {
-		return err
-	}
-	db.dataFile, err = os.OpenFile(db.path+".data", os.O_RDWR, 0644)
-	if err != nil {
-		return err
-	}
-
-	db.walFile.Close()
-	db.walFile, err = wal.Open(db.path+".wal", 2*time.Second)
-	if err != nil {
-		return err
-	}
-	return err
-}
-
 // Close closes all files
 func (db *MiniKV) Close() error {
 	db.mu.Lock()
