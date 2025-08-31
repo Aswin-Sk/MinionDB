@@ -1,63 +1,75 @@
 package keystore
 
 import (
-	"MinionDB/internal/logger"
-	"MinionDB/internal/wal"
-	"fmt"
+	"bufio"
+	"encoding/binary"
 	"os"
 	"time"
 )
 
-// Compact merges index into data file and clears WAL
 func (db *MiniKV) Compact() error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
+	// Pause batching during compaction
+	db.wb.PauseForMaintenance()
+	defer db.wb.ResumeAfterMaintenance() // always called
 
-	tempPath := db.path + ".data.tmp"
-	tempFile, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	tmpPath := db.path + ".compact"
+	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
-	for key, val := range db.index {
-		line := fmt.Sprintf("%s:%s\n", key, val)
-		if _, err := tempFile.WriteString(line); err != nil {
-			tempFile.Close()
-			return err
-		}
-	}
-	tempFile.Sync()
-	tempFile.Close()
+	buf := bufio.NewWriterSize(tmpFile, 1<<20)
 
-	db.dataFile.Close()
-	err = os.Rename(tempPath, db.path+".data")
-	if err != nil {
-		return err
-	}
-	db.dataFile, err = os.OpenFile(db.path+".data", os.O_RDWR, 0644)
-	if err != nil {
-		return err
+	// write only the latest state from index
+	for k, v := range db.index {
+		buf.WriteByte(byte(opSet))
+		var klen, vlen [4]byte
+		binary.LittleEndian.PutUint32(klen[:], uint32(len(k)))
+		binary.LittleEndian.PutUint32(vlen[:], uint32(len(v)))
+		buf.Write([]byte(k))
+		buf.Write(v)
 	}
 
-	db.walFile.Close()
-	db.walFile, err = wal.Open(db.path+".wal", 2*time.Second)
+	if err := buf.Flush(); err != nil {
+		tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		tmpFile.Close()
+		return err
+	}
+	tmpFile.Close()
+
+	// safely replace old WAL file
+	db.file.Close()
+	if err := os.Rename(tmpPath, db.path); err != nil {
+		return err
+	}
+
+	// reopen the WAL
+	newF, err := os.OpenFile(db.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
 		return err
 	}
-	return err
+	db.file = newF
+
+	// restart the batcher with the new file
+	db.wb.Stop()
+	db.wb = NewWriteBatcher(newF, 128, 10*time.Millisecond, db.apply)
+	db.wb.Start()
+
+	return nil
 }
 
-func (db *MiniKV) RunBackgroundCompaction(interval time.Duration, stopCh <-chan struct{}) {
+func (db *MiniKV) RunBackgroundCompaction(interval time.Duration, stopCh chan struct{}) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			if err := db.Compact(); err != nil {
-				logger.Logger.Error("Compaction error", "error", err)
-			}
-			logger.Logger.Info("Compaction completed")
+			_ = db.Compact()
 		case <-stopCh:
 			return
 		}
+
 	}
 }

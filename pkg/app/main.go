@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"MinionDB/internal/keystore"
@@ -16,7 +16,7 @@ import (
 
 var db *keystore.MiniKV
 
-func main() {
+func Start() {
 	logger.InitLogger(slog.LevelInfo)
 
 	var err error

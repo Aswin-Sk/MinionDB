@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"net/http"
@@ -9,11 +9,11 @@ import (
 func handleGet(c *gin.Context) {
 	key := c.Param("key")
 	val, err := db.Get(key)
-	if err != nil {
+	if !err {
 		c.JSON(http.StatusNotFound, gin.H{"error": "key not found"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"key": key, "value": val})
+	c.JSON(http.StatusOK, gin.H{"key": key, "value": string(val)})
 }
 
 type setRequest struct {
@@ -28,7 +28,7 @@ func handleSet(c *gin.Context) {
 		return
 	}
 
-	if err := db.Set(req.Key, req.Value); err != nil {
+	if err := db.Set(req.Key, []byte(req.Value)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

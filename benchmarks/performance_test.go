@@ -21,7 +21,7 @@ func setupDB() *keystore.MiniKV {
 	for i := 0; i < 1000; i++ {
 		key := "key" + strconv.Itoa(i)
 		value := "value" + strconv.Itoa(rand.Int())
-		if err := db.Set(key, value); err != nil {
+		if err := db.Set(key, []byte(value)); err != nil {
 			panic(err)
 		}
 	}
@@ -40,10 +40,8 @@ func BenchmarkConcurrentReads(b *testing.B) {
 		go func(i int) {
 			defer wg.Done()
 			value := "value" + strconv.Itoa(rand.Intn(1000+1))
-			if _, err := db.Get(fmt.Sprintf("key%s", value)); err != nil {
-				if err.Error() != "key not found" {
-					b.Error(err)
-				}
+			if _, err := db.Get(fmt.Sprintf("key%s", []byte(value))); err {
+				b.Error(fmt.Errorf("Get failed"))
 			}
 		}(i)
 	}

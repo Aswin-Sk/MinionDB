@@ -1,158 +1,86 @@
 package keystore
 
 import (
-	"MinionDB/internal/wal"
-	"bufio"
-	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"time"
 )
 
-const tombstone = "__deleted__"
-
 type MiniKV struct {
-	mu       sync.RWMutex
-	dataFile *os.File
-	walFile  *wal.WAL
-	index    map[string]string
-	path     string
+	wb    *WriteBatcher
+	index map[string][]byte
+	file  *os.File
+	mu    sync.RWMutex
+	path  string
 }
 
-// Open opens or creates a MiniKV instance with WAL support
 func Open(path string) (*MiniKV, error) {
-	dataPath := path + ".data"
-	walPath := path + ".wal"
-
-	dataFile, err := os.OpenFile(dataPath, os.O_CREATE|os.O_RDWR, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, err
 	}
-	walFile, err := wal.Open(walPath, 2*time.Second)
-	if err != nil {
-		dataFile.Close()
-		return nil, err
+
+	kv := &MiniKV{
+		index: make(map[string][]byte),
+		file:  f,
+		path:  path,
 	}
 
-	db := &MiniKV{
-		dataFile: dataFile,
-		walFile:  walFile,
-		index:    make(map[string]string),
-		path:     path,
-	}
+	kv.wb = NewWriteBatcher(f, 512, 50*time.Millisecond, kv.apply)
+	kv.wb.Start()
 
-	if err := db.loadDataFile(); err != nil {
-		db.Close()
-		return nil, err
-	}
-
-	if err := db.replayWAL(); err != nil {
-		db.Close()
-		return nil, err
-	}
-
-	return db, nil
+	return kv, nil
 }
 
-// loadDataFile rebuilds the index from the data snapshot
-func (db *MiniKV) loadDataFile() error {
-	if _, err := db.dataFile.Seek(0, 0); err != nil {
-		return err
-	}
-	scanner := bufio.NewScanner(db.dataFile)
-	for scanner.Scan() {
-		line := scanner.Text()
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key, val := parts[0], parts[1]
-		if val != tombstone {
-			db.index[key] = val
-		}
-	}
-	return scanner.Err()
-}
+func (db *MiniKV) apply(op opType, key string, val []byte) {
 
-// replayWAL applies pending operations from WAL to the index
-func (db *MiniKV) replayWAL() error {
-	if _, err := db.walFile.File.Seek(0, 0); err != nil {
-		return err
-	}
-
-	scanner := bufio.NewScanner(db.walFile.File)
-	for scanner.Scan() {
-		line := scanner.Text()
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key, val := parts[0], parts[1]
-		if val == tombstone {
-			delete(db.index, key)
-		} else {
-			db.index[key] = val
-		}
-	}
-
-	return scanner.Err()
-}
-
-// Set inserts or updates a key-value pair
-func (db *MiniKV) Set(key, value string) error {
 	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	line := fmt.Sprintf("%s:%s\n", key, value)
-	err := db.walFile.Append([]byte(line))
-	if err != nil {
-		return err
+	switch op {
+	case opSet:
+		db.index[key] = append([]byte(nil), val...)
+	case opDel:
+		delete(db.index, key)
 	}
-	db.index[key] = value
+	db.mu.Unlock()
+}
+
+func (db *MiniKV) Set(key string, value []byte) error {
+	valCopy := append([]byte(nil), value...)
+
+	db.mu.Lock()
+	db.index[key] = valCopy
+	db.mu.Unlock()
+
+	db.wb.EnqueueSet(key, valCopy)
 	return nil
 }
 
-// Get retrieves a value by key
-func (db *MiniKV) Get(key string) (string, error) {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	val, ok := db.index[key]
-	if !ok {
-		return "", fmt.Errorf("key not found")
-	}
-	return val, nil
-}
-
-// Delete removes a key (using tombstone marker)
 func (db *MiniKV) Delete(key string) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	if _, ok := db.index[key]; !ok {
-		return fmt.Errorf("key not found")
-	}
-	line := fmt.Sprintf("%s:%s\n", key, tombstone)
-	err := db.walFile.Append([]byte(line))
+	err := db.wb.EnqueueDel(key)
 	if err != nil {
 		return err
 	}
+
+	db.mu.Lock()
 	delete(db.index, key)
+	db.mu.Unlock()
 	return nil
 }
 
-// Close closes all files
+func (db *MiniKV) Get(key string) ([]byte, bool) {
+	db.mu.RLock()
+	v, ok := db.index[key]
+	db.mu.RUnlock()
+	return v, ok
+}
+
 func (db *MiniKV) Close() error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-	err := db.dataFile.Close()
-	if err != nil {
-		return err
+	db.wb.PauseForMaintenance()
+	db.wb.WaitForDrained()
+	close(db.wb.reqCh)
+	if db.wb.doneCh != nil {
+		<-db.wb.doneCh
 	}
-	err = db.walFile.Close()
-	if err != nil {
-		return err
-	}
-	return nil
+	_ = db.file.Sync()
+	return db.file.Close()
 }
