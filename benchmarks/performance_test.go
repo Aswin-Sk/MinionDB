@@ -1,7 +1,6 @@
 package benchmarks
 
 import (
-	"fmt"
 	"math/rand"
 	"os"
 	"strconv"
@@ -11,70 +10,147 @@ import (
 	"MinionDB/internal/keystore"
 )
 
-func setupDB() *keystore.MiniKV {
-	os.Remove("testdb.data")
-	db, err := keystore.Open("testdb.data")
-	if err != nil {
-		panic(err)
+// setupShardedDB creates a ShardedKV with N shards and pre-populates each shard.
+func setupShardedDB(basePath string, numShards int, keysPerShard int) (*keystore.ShardedKV, error) {
+	os.RemoveAll(basePath)
+	if err := os.MkdirAll(basePath, 0755); err != nil {
+		return nil, err
 	}
 
-	for i := 0; i < 1000; i++ {
+	skv, err := keystore.NewShardedKV(basePath, numShards)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := 0; i < keysPerShard*numShards; i++ {
 		key := "key" + strconv.Itoa(i)
-		value := "value" + strconv.Itoa(rand.Int())
-		if err := db.Set(key, []byte(value)); err != nil {
-			panic(err)
+		val := []byte("value" + strconv.Itoa(rand.Int()))
+		if err := skv.Set(key, val); err != nil {
+			return nil, err
 		}
 	}
-	return db
+
+	return skv, nil
 }
 
-func BenchmarkConcurrentReads(b *testing.B) {
-	db := setupDB()
-	defer db.Close()
+// BenchmarkShardedReads benchmarks concurrent reads across shards.
+func BenchmarkShardedReads(b *testing.B) {
+	basePath := "testshards"
+	numShards := 8
+	keysPerShard := 1000
 
-	b.ResetTimer()
+	skv, err := setupShardedDB(basePath, numShards, keysPerShard)
+	if err != nil {
+		b.Fatalf("failed to setup DB: %v", err)
+	}
+	defer skv.Close()
+
+	const numGoroutines = 8
 
 	var wg sync.WaitGroup
-	for i := 0; i < b.N; i++ {
+	ch := make(chan int, b.N)
+	for i := 0; b.Loop(); i++ {
+		ch <- i
+	}
+	close(ch)
+
+	for g := 0; g < numGoroutines; g++ {
 		wg.Add(1)
-		go func(i int) {
+		go func() {
 			defer wg.Done()
-			value := "value" + strconv.Itoa(rand.Intn(1000+1))
-			if _, err := db.Get(fmt.Sprintf("key%s", []byte(value))); err {
-				b.Error(fmt.Errorf("Get failed"))
+			for range ch {
+				idx := rand.Intn(numShards * keysPerShard)
+				key := "key" + strconv.Itoa(idx)
+				if _, ok := skv.Get(key); !ok {
+					b.Errorf("Get failed for key %s", key)
+				}
 			}
-		}(i)
+		}()
 	}
 	wg.Wait()
 }
 
-func BenchmarkDeletes(b *testing.B) {
-	db := setupDB()
-	defer db.Close()
+// BenchmarkShardedWrites benchmarks concurrent writes across shards.
+func BenchmarkShardedWrites(b *testing.B) {
+	basePath := "testshards"
+	numShards := 8
+	keysPerShard := 1000
 
+	skv, err := setupShardedDB(basePath, numShards, keysPerShard)
+	if err != nil {
+		b.Fatalf("failed to setup DB: %v", err)
+	}
+	defer skv.Close()
+
+	const numGoroutines = 8
 	b.ResetTimer()
 
+	var wg sync.WaitGroup
+	ch := make(chan int, b.N)
 	for i := 0; i < b.N; i++ {
-		key := "key" + strconv.Itoa(i%1000)
-		if err := db.Delete(key); err != nil {
-			b.Error(err)
+		ch <- i
+	}
+	close(ch)
+
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range ch {
+				idx := rand.Intn(numShards * keysPerShard)
+				key := "key" + strconv.Itoa(idx)
+				val := []byte("value" + strconv.Itoa(rand.Int()))
+				if err := skv.Set(key, val); err != nil {
+					b.Errorf("Set failed for key %s: %v", key, err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// BenchmarkShardedDeletes benchmarks deletes across shards.
+func BenchmarkShardedDeletes(b *testing.B) {
+	basePath := "testshards"
+	numShards := 8
+	keysPerShard := 1000
+
+	skv, err := setupShardedDB(basePath, numShards, keysPerShard)
+	if err != nil {
+		b.Fatalf("failed to setup DB: %v", err)
+	}
+	defer skv.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := "key" + strconv.Itoa(i%(numShards*keysPerShard))
+		if err := skv.Delete(key); err != nil {
+			b.Errorf("Delete failed for key %s: %v", key, err)
 		}
 	}
 }
 
-func BenchmarkCompaction(b *testing.B) {
-	db := setupDB()
-	defer db.Close()
+// BenchmarkShardedCompaction benchmarks compaction across shards.
+func BenchmarkShardedCompaction(b *testing.B) {
+	basePath := "testshards"
+	numShards := 8
+	keysPerShard := 1000
 
+	skv, err := setupShardedDB(basePath, numShards, keysPerShard)
+	if err != nil {
+		b.Fatalf("failed to setup DB: %v", err)
+	}
+	defer skv.Close()
+
+	// Delete some keys to make compaction meaningful
 	for i := 0; i < 500; i++ {
-		_ = db.Delete("key" + strconv.Itoa(i))
+		_ = skv.Delete("key" + strconv.Itoa(i))
 	}
 
 	b.ResetTimer()
-
 	for i := 0; i < b.N; i++ {
-		if err := db.Compact(); err != nil {
-			b.Error(err)
+		if err := skv.Compact(basePath); err != nil {
+			b.Errorf("Compaction failed: %v", err)
 		}
 	}
 }

@@ -1,39 +1,31 @@
 package keystore
 
 import (
-	"os"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 type MiniKV struct {
-	wb    *WriteBatcher
-	index map[string][]byte
-	file  *os.File
 	mu    sync.RWMutex
-	path  string
+	index map[string][]byte
+	wb    *WriteBatcher
 }
 
-func Open(path string) (*MiniKV, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+func open(path string) (*MiniKV, error) {
+	wb, err := NewWriteBatcher(path+".wal", 128, 5*time.Millisecond)
 	if err != nil {
 		return nil, err
 	}
 
-	kv := &MiniKV{
+	return &MiniKV{
 		index: make(map[string][]byte),
-		file:  f,
-		path:  path,
-	}
-
-	kv.wb = NewWriteBatcher(f, 512, 50*time.Millisecond, kv.apply)
-	kv.wb.Start()
-
-	return kv, nil
+		wb:    wb,
+	}, nil
 }
 
 func (db *MiniKV) apply(op opType, key string, val []byte) {
-
 	db.mu.Lock()
 	switch op {
 	case opSet:
@@ -44,27 +36,11 @@ func (db *MiniKV) apply(op opType, key string, val []byte) {
 	db.mu.Unlock()
 }
 
-func (db *MiniKV) Set(key string, value []byte) error {
-	valCopy := append([]byte(nil), value...)
-
+func (db *MiniKV) Set(key string, val []byte) error {
 	db.mu.Lock()
-	db.index[key] = valCopy
+	db.index[key] = append([]byte(nil), val...)
 	db.mu.Unlock()
-
-	db.wb.EnqueueSet(key, valCopy)
-	return nil
-}
-
-func (db *MiniKV) Delete(key string) error {
-	err := db.wb.EnqueueDel(key)
-	if err != nil {
-		return err
-	}
-
-	db.mu.Lock()
-	delete(db.index, key)
-	db.mu.Unlock()
-	return nil
+	return db.wb.EnqueueSet(key, val)
 }
 
 func (db *MiniKV) Get(key string) ([]byte, bool) {
@@ -74,13 +50,19 @@ func (db *MiniKV) Get(key string) ([]byte, bool) {
 	return v, ok
 }
 
+func (db *MiniKV) Delete(key string) error {
+	db.mu.Lock()
+	delete(db.index, key)
+	db.mu.Unlock()
+	return db.wb.EnqueueDel(key)
+}
+
 func (db *MiniKV) Close() error {
-	db.wb.PauseForMaintenance()
-	db.wb.WaitForDrained()
-	close(db.wb.reqCh)
-	if db.wb.doneCh != nil {
-		<-db.wb.doneCh
-	}
-	_ = db.file.Sync()
-	return db.file.Close()
+	return db.wb.Close()
+}
+
+func (db *MiniKV) swapWriteBatcher(newBatcher *WriteBatcher) *WriteBatcher {
+	old := db.wb
+	atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(&db.wb)), unsafe.Pointer(newBatcher))
+	return old
 }

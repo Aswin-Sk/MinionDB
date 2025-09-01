@@ -31,7 +31,6 @@ func Open(path string, flushEvery time.Duration) (*WAL, error) {
 		closeCh:    make(chan struct{}),
 	}
 
-	// Start background flusher
 	w.wg.Add(1)
 	go w.backgroundFlush()
 
@@ -42,13 +41,11 @@ func (w *WAL) Append(data []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// Write length + data (optional, for parsing)
 	_, err := w.writer.Write(data)
 	if err != nil {
 		return err
 	}
 
-	// Flush if time elapsed
 	if time.Since(w.lastFlush) >= w.flushEvery {
 		if err := w.flush(); err != nil {
 			return err

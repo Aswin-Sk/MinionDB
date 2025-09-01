@@ -14,26 +14,25 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var db *keystore.MiniKV
+var db *keystore.ShardedKV
+var path = "C:\\Users\\HP\\Documents\\applications\\MinionDB\\MinionDB\\data"
 
 func Start() {
 	logger.InitLogger(slog.LevelInfo)
 
 	var err error
-	db, err = keystore.Open("../../minikv.data")
+	db, err = keystore.NewShardedKV(path, 16)
 	if err != nil {
 		panic(err)
 	}
 
 	stopChannel := make(chan struct{})
-	go db.RunBackgroundCompaction(1*time.Minute, stopChannel)
+	go db.Compact(path)
 
-	// Setup Gin
 	r := gin.Default()
 	r.GET("/get/:key", handleGet)
 	r.POST("/set", handleSet)
 	r.DELETE("/delete/:key", handleDelete)
-	r.POST("/compact", handleCompact)
 
 	srv := &http.Server{
 		Addr:    ":8080",

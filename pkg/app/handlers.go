@@ -43,11 +43,3 @@ func handleDelete(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
-
-func handleCompact(c *gin.Context) {
-	if err := db.Compact(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "compaction failed"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"status": "compacted"})
-}

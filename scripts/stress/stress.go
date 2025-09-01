@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	db, err := keystore.Open("../../minikv.data")
+	db, err := keystore.NewShardedKV("C:\\Users\\HP\\Documents\\applications\\MinionDB\\MinionDB\\data", 8)
 	if err != nil {
 		panic(err)
 	}
