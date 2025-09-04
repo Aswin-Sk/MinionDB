@@ -15,7 +15,7 @@ import (
 )
 
 var db *keystore.ShardedKV
-var path = "C:\\Users\\HP\\Documents\\applications\\MinionDB\\MinionDB\\data"
+var path = ".\\data"
 
 func Start() {
 	logger.InitLogger(slog.LevelInfo)

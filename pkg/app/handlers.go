@@ -1,6 +1,7 @@
 package app
 
 import (
+	"MinionDB/internal/keystore"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -10,6 +11,11 @@ func handleGet(c *gin.Context) {
 	key := c.Param("key")
 	val, err := db.Get(key)
 	if !err {
+		c.JSON(http.StatusNotFound, gin.H{"error": "key not found"})
+		return
+	}
+	valString := string(val)
+	if valString == keystore.Tombstone {
 		c.JSON(http.StatusNotFound, gin.H{"error": "key not found"})
 		return
 	}

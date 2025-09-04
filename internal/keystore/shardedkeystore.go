@@ -7,12 +7,16 @@ import (
 )
 
 type ShardedKV struct {
-	shards []*MiniKV
-	n      int
+	shards        []*MiniKV
+	n             int
+	baseDirectory string
 }
 
 func NewShardedKV(path string, shards int) (*ShardedKV, error) {
-	skv := &ShardedKV{n: shards}
+	skv := &ShardedKV{
+		n:             shards,
+		baseDirectory: path,
+	}
 	for i := range shards {
 		kv, err := open(filepath.Join(path, fmt.Sprintf("shard-%d", i)))
 		if err != nil {

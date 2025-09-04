@@ -3,17 +3,21 @@ package keystore
 import (
 	"MinionDB/internal/SSTables"
 	"MinionDB/internal/logger"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
-	"time"
 )
 
+var WALExistsError = errors.New("WAL already exists")
+
 func (db *MiniKV) Compact(basePath string) error {
-	// Swap the WAL/write batcher to a new file
-	newPath := filepath.Join(filepath.Dir(basePath), fmt.Sprintf("active-%d.wal", time.Now().UnixNano()))
-	newBatcher, err := NewWriteBatcher(newPath, db.wb.batchSz, db.wb.interval)
+
+	newPath, err := nextWALPath(basePath)
 	if err != nil {
+		return err
+	}
+	newBatcher, err := NewWriteBatcher(newPath, db.wb.batchSz, db.wb.interval)
+	if err != nil && !errors.Is(err, os.ErrExist) {
 		return err
 	}
 	oldBatcher := db.swapWriteBatcher(newBatcher)
@@ -28,7 +32,7 @@ func (db *MiniKV) Compact(basePath string) error {
 		db.mu.RUnlock()
 
 		// Flush memtable snapshot to a new SSTable
-		sstPath := filepath.Join(filepath.Dir(basePath), fmt.Sprintf("sst-%d.dat", time.Now().UnixNano()))
+		sstPath := db.nextSSTablePath()
 		if err := SSTables.WriteSSTable(sstPath, snapshot); err != nil {
 			logger.Logger.Error("Error writing SSTable:", "error", err)
 			return
@@ -42,7 +46,7 @@ func (db *MiniKV) Compact(basePath string) error {
 
 		// Compact existing SSTables
 		if err := db.CompactSSTables(); err != nil {
-			fmt.Println("Error compacting SSTables:", err)
+			logger.Logger.Error("Error compacting SSTables:", "error", err)
 		}
 
 		old.Close()
@@ -64,7 +68,7 @@ func (db *MiniKV) CompactSSTables() error {
 	sst2 := db.sstables[1]
 	db.mu.Unlock()
 
-	mergedPath := fmt.Sprintf("sst-merged-%d.dat", time.Now().UnixNano())
+	mergedPath := db.nextSSTablePath()
 	if err := SSTables.MergeSSTables(mergedPath, sst1.Path, sst2.Path); err != nil {
 		return err
 	}
@@ -77,4 +81,29 @@ func (db *MiniKV) CompactSSTables() error {
 	os.Remove(sst2.Path)
 
 	return nil
+}
+
+func nextWALPath(basePath string) (string, error) {
+	walDir := filepath.Join(basePath, "wal")
+	if err := os.MkdirAll(walDir, 0755); err != nil {
+		return "", err
+	}
+
+	newPath := filepath.Join(walDir, "new.wal")
+	return newPath, nil
+}
+
+func getWALPath(basePath string) (string, error) {
+	walDir := filepath.Join(basePath, "wal")
+	if err := os.MkdirAll(walDir, 0755); err != nil {
+		return "", err
+	}
+
+	newPath := filepath.Join(walDir, "active.wal")
+	_, err := os.Stat(filepath.Join(walDir, "active.wal"))
+	if err == nil {
+		return newPath, WALExistsError
+	}
+
+	return newPath, nil
 }

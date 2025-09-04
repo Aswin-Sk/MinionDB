@@ -1,6 +1,7 @@
 package keystore
 
 import (
+	"encoding/binary"
 	"os"
 	"sync"
 	"time"
@@ -83,17 +84,26 @@ func (wb *WriteBatcher) flush(batch []writeReq) {
 	defer wb.mu.Unlock()
 
 	for _, r := range batch {
-		switch r.t {
-		case opSet:
-			wb.file.Write([]byte{byte(opSet)})
-			wb.file.Write([]byte(r.key))
-			wb.file.Write([]byte{0})
+		// write op
+		wb.file.Write([]byte{byte(r.t)})
+
+		// write key length
+		var klenBuf [4]byte
+		binary.LittleEndian.PutUint32(klenBuf[:], uint32(len(r.key)))
+		wb.file.Write(klenBuf[:])
+
+		// write value length (for Set only)
+		if r.t == opSet {
+			var vlenBuf [4]byte
+			binary.LittleEndian.PutUint32(vlenBuf[:], uint32(len(r.val)))
+			wb.file.Write(vlenBuf[:])
+		}
+
+		// write key
+		wb.file.Write([]byte(r.key))
+
+		if r.t == opSet {
 			wb.file.Write(r.val)
-			wb.file.Write([]byte{'\n'})
-		case opDel:
-			wb.file.Write([]byte{byte(opDel)})
-			wb.file.Write([]byte(r.key))
-			wb.file.Write([]byte{'\n'})
 		}
 	}
 
@@ -110,7 +120,7 @@ func (wb *WriteBatcher) EnqueueSet(key string, val []byte) error {
 	req := writeReq{
 		t:    opSet,
 		key:  key,
-		val:  append([]byte(nil), val...), // copy
+		val:  append([]byte(nil), val...),
 		done: make(chan error, 1),
 	}
 	wb.reqCh <- req
