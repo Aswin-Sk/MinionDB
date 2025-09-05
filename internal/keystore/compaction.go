@@ -6,9 +6,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"time"
 )
 
-var WALExistsError = errors.New("WAL already exists")
+var ErrWalExists = errors.New("WAL already exists")
 
 func (db *MiniKV) Compact(basePath string) error {
 
@@ -43,11 +44,6 @@ func (db *MiniKV) Compact(basePath string) error {
 		db.sstables = append(db.sstables, SSTables.SSTable{Path: sstPath})
 		db.index = make(map[string][]byte)
 		db.mu.Unlock()
-
-		// Compact existing SSTables
-		if err := db.CompactSSTables(); err != nil {
-			logger.Logger.Error("Error compacting SSTables:", "error", err)
-		}
 
 		old.Close()
 		os.Remove(old.file.Name())
@@ -102,8 +98,23 @@ func getWALPath(basePath string) (string, error) {
 	newPath := filepath.Join(walDir, "active.wal")
 	_, err := os.Stat(filepath.Join(walDir, "active.wal"))
 	if err == nil {
-		return newPath, WALExistsError
+		return newPath, ErrWalExists
 	}
 
 	return newPath, nil
+}
+
+func (skv *ShardedKV) BackgroundCompaction(path string, stopCh chan struct{}) {
+	for {
+		for i, shard := range skv.shards {
+			if len(shard.sstables) >= 3 {
+				logger.Logger.Info("compacting SSTables", "shard", i)
+				if err := shard.CompactSSTables(); err != nil {
+					logger.Logger.Error("Error compacting SSTables:", "error", err)
+					//TODO: handle error
+				}
+				time.Sleep(30 * time.Second)
+			}
+		}
+	}
 }

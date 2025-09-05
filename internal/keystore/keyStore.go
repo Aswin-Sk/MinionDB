@@ -33,7 +33,7 @@ func open(path string) (*MiniKV, error) {
 
 	walPath, err := getWALPath(path)
 	if err != nil {
-		if err != WALExistsError {
+		if err != ErrWalExists {
 			return nil, err
 		}
 		index, err = ReplayWAL(walPath)
@@ -118,6 +118,9 @@ func (db *MiniKV) swapWriteBatcher(newBatcher *WriteBatcher) *WriteBatcher {
 }
 
 func (db *MiniKV) flushToSSTable() error {
+	if len(db.sstables) >= 5 {
+		return errors.New("too many SSTables")
+	}
 	db.mu.RLock()
 	snapshot := make(map[string][]byte, len(db.index))
 	for k, v := range db.index {

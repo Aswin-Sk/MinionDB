@@ -1,4 +1,4 @@
 .vscode
 local
 data/
-benchmarks/testshards/
+benchmarks/

@@ -15,7 +15,7 @@ import (
 )
 
 var db *keystore.ShardedKV
-var path = ".\\data"
+var path = "data"
 
 func Start() {
 	logger.InitLogger(slog.LevelInfo)
@@ -27,7 +27,7 @@ func Start() {
 	}
 
 	stopChannel := make(chan struct{})
-	go RunBackgroundCompaction(path, stopChannel)
+	go db.BackgroundCompaction(path, stopChannel)
 
 	r := gin.Default()
 	r.GET("/get/:key", handleGet)
@@ -68,19 +68,4 @@ func ShutdownServer(srv *http.Server, stopChannel chan struct{}) {
 	}
 
 	logger.Logger.Info("Server exited")
-}
-
-func RunBackgroundCompaction(path string, stopCh chan struct{}) {
-	ticker := time.NewTicker(20 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			if err := db.Compact(path); err != nil {
-				logger.Logger.Error("Compaction error", "error", err)
-			}
-		case <-stopCh:
-			return
-		}
-	}
 }
