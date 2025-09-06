@@ -2,6 +2,7 @@ package miniondb
 
 import (
 	"errors"
+	"log/slog"
 
 	"github.com/Aswin-Sk/MinionDB/internal/keystore"
 	"github.com/Aswin-Sk/MinionDB/internal/logger"
@@ -14,10 +15,13 @@ type DB struct {
 // Open creates or opens a MinionDB instance at the given path.
 // `shards` controls the number of shard partitions (parallelism).
 func Open(path string, shards int) (*DB, error) {
+	logger.InitLogger(slog.LevelInfo)
 	skv, err := keystore.NewShardedKV(path, shards)
 	if err != nil {
 		return nil, err
 	}
+	stopChannel := make(chan struct{})
+	go skv.BackgroundCompaction(path, stopChannel)
 	logger.Logger.Info("MinionDB opened", "path", path, "shards", shards)
 	return &DB{skv: skv}, nil
 }
