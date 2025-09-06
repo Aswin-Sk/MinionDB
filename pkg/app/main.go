@@ -1,8 +1,6 @@
 package app
 
 import (
-	"MinionDB/internal/keystore"
-	"MinionDB/internal/logger"
 	"context"
 	"log/slog"
 	"net/http"
@@ -10,6 +8,9 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/Aswin-Sk/MinionDB/internal/keystore"
+	"github.com/Aswin-Sk/MinionDB/internal/logger"
 
 	"github.com/gin-gonic/gin"
 )

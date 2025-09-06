@@ -1,7 +1,7 @@
 package main
 
 import (
-	"MinionDB/pkg/app"
+	"github.com/Aswin-Sk/MinionDB/pkg/app"
 )
 
 func main() {

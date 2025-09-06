@@ -1,9 +1,10 @@
 package miniondb
 
 import (
-	"MinionDB/internal/keystore"
-	"MinionDB/internal/logger"
 	"errors"
+
+	"github.com/Aswin-Sk/MinionDB/internal/keystore"
+	"github.com/Aswin-Sk/MinionDB/internal/logger"
 )
 
 type DB struct {
