@@ -1,12 +1,13 @@
 package keystore
 
 import (
-	"MinionDB/internal/SSTables"
-	"MinionDB/internal/logger"
 	"errors"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/Aswin-Sk/MinionDB/internal/SSTables"
+	"github.com/Aswin-Sk/MinionDB/internal/logger"
 )
 
 var ErrWalExists = errors.New("WAL already exists")

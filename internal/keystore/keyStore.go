@@ -1,8 +1,6 @@
 package keystore
 
 import (
-	"MinionDB/internal/SSTables"
-	"MinionDB/internal/logger"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -13,6 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"github.com/Aswin-Sk/MinionDB/internal/SSTables"
+	"github.com/Aswin-Sk/MinionDB/internal/logger"
 )
 
 const Tombstone = "__deleted__"
